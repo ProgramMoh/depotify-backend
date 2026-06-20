@@ -1,6 +1,29 @@
 from flask import Flask, request, jsonify
 import subprocess
 import json
+import os
+import urllib.request
+import tarfile
+
+# --- BOOTSTRAP NODE.JS FOR YT-DLP ---
+# yt-dlp requires a JavaScript runtime (like Node.js) to decrypt YouTube's bot-protection signatures.
+# Since Render's Python environment doesn't have Node, we download a portable Linux binary on startup!
+NODE_DIR = os.path.join(os.getcwd(), "node_bin")
+NODE_EXEC = os.path.join(NODE_DIR, "bin", "node")
+
+if not os.path.exists(NODE_EXEC):
+    print("Downloading portable Node.js for yt-dlp...")
+    node_url = "https://nodejs.org/dist/v20.11.1/node-v20.11.1-linux-x64.tar.xz"
+    tar_path = "node.tar.xz"
+    
+    urllib.request.urlretrieve(node_url, tar_path)
+    os.system(f"mkdir -p {NODE_DIR}")
+    os.system(f"tar -xf {tar_path} -C {NODE_DIR} --strip-components=1")
+    os.remove(tar_path)
+    print("Node.js installed successfully.")
+
+# Add node to PATH so yt-dlp can find it automatically
+os.environ["PATH"] = os.path.join(NODE_DIR, "bin") + os.pathsep + os.environ.get("PATH", "")
 
 app = Flask(__name__)
 
