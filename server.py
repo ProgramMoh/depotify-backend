@@ -17,8 +17,8 @@ if not os.path.exists(NODE_EXEC):
     tar_path = "node.tar.xz"
     
     urllib.request.urlretrieve(node_url, tar_path)
-    os.system(f"mkdir -p {NODE_DIR}")
-    os.system(f"tar -xf {tar_path} -C {NODE_DIR} --strip-components=1")
+    os.system(f'mkdir -p "{NODE_DIR}"')
+    os.system(f'tar -xf "{tar_path}" -C "{NODE_DIR}" --strip-components=1')
     os.remove(tar_path)
     print("Node.js installed successfully.")
 
@@ -47,6 +47,7 @@ def get_stream():
         
     command = [
         "python3", "-m", "yt_dlp",
+        "--js-runtimes", f"node:{NODE_EXEC}",
         f"ytsearch1:{query}",
         "-f", format_str,
         "--get-url"
