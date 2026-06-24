@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .env
 server.log
+
+node_bin/
