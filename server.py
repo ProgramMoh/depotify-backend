@@ -223,52 +223,20 @@ def get_stream():
             
             download_success = False
             
-            # Try yt-dlp first
+            # Try yt-dlp
             try:
                 dl_command = [
                     "python3", "-m", "yt_dlp",
                     "-f", format_str,
                     "--user-agent", ua,
-                    "--extractor-args", "youtube:player_client=android_vr",
+                    "--extractor-args", "youtube:player_client=android_vr,tv_downgraded",
                     "-o", str(temp_file)
                 ]
                 
-                if os.path.exists("cookies.txt"):
-                    dl_command.extend(["--cookies", "cookies.txt"])
-                    
                 dl_command.append(f"https://www.youtube.com/watch?v={video_id}")
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
                 download_success = True
             except subprocess.CalledProcessError as dl_e:
-                print(f"yt-dlp download failed, falling back to Cobalt API... Error: {dl_e.stderr}")
-                
-            # Fallback to Cobalt
-            if not download_success:
-                try:
-                    cobalt_url = "https://api.cobalt.tools/api/json"
-                    data = json.dumps({
-                        "url": f"https://www.youtube.com/watch?v={video_id}",
-                        "isAudioOnly": True,
-                        "aFormat": "m4a"
-                    }).encode('utf-8')
-                    
-                    req = urllib.request.Request(cobalt_url, data=data, headers={
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'User-Agent': ua
-                    })
-                    
-                    resp = urllib.request.urlopen(req, timeout=15)
-                    result = json.loads(resp.read())
-                    download_url = result.get('url')
-                    if download_url:
-                        urllib.request.urlretrieve(download_url, str(temp_file))
-                        download_success = True
-                    else:
-                        print("Cobalt API did not return a URL.")
-                except Exception as cobalt_e:
-                    print(f"Cobalt API failed: {cobalt_e}")
-                    
             if not download_success:
                 return jsonify({"error": "Failed to extract stream"}), 500
             
