@@ -3,11 +3,15 @@ import subprocess
 import json
 import os
 import urllib.request
+import urllib.parse
 import tarfile
 import sqlite3
 import uuid
 import hashlib
+import boto3
 from pathlib import Path
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 try:
     import librosa
@@ -38,6 +42,16 @@ if not os.path.exists(NODE_EXEC):
 os.environ["PATH"] = os.path.join(NODE_DIR, "bin") + os.pathsep + os.environ.get("PATH", "")
 
 app = Flask(__name__)
+
+# Backblaze B2 Configuration
+b2 = boto3.client(
+    's3',
+    endpoint_url='https://s3.us-west-004.backblazeb2.com',
+    aws_access_key_id='004bc05ef055ac00000000001',
+    aws_secret_access_key='K0043P5xHLpo5KnnRUQwQMQ9TsTrib4',
+    config=Config(signature_version='s3v4')
+)
+B2_BUCKET = 'depotify'
 
 # --- DATABASE SETUP ---
 DB_PATH = "depotify.db"
@@ -138,31 +152,71 @@ def get_stream():
     print(f"Searching YouTube for: {query} (Quality: {quality})")
     
     if quality == 'low':
-        format_str = "m4a[abr<=64]/worstaudio/worst"
+        format_str = "bestaudio[ext=m4a][abr<=64]/m4a/best"
     else:
-        format_str = "m4a/bestaudio/best"
+        format_str = "bestaudio[ext=m4a]/m4a/best"
         
-    command = [
-        "python3", "-m", "yt_dlp",
-        "--extractor-args", "youtube:player_client=android",
-        f"ytsearch1:{query}",
-        "-f", format_str,
-        "--get-url"
-    ]
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
+    # 1. Get the video ID
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
-        stream_url = result.stdout.strip()
-        
-        if stream_url:
-            print(f"Found stream URL.")
-            return jsonify({"stream_url": stream_url})
-        else:
+        search_command = [
+            "python3", "-m", "yt_dlp",
+            f"ytsearch1:{query}",
+            "--extractor-args", "youtube:player_client=android_vr",
+            "--get-id"
+        ]
+        result = subprocess.run(search_command, capture_output=True, text=True, check=True)
+        video_id = result.stdout.strip()
+        if not video_id:
             return jsonify({"error": "No stream found"}), 404
             
+        # 2. Check B2 Bucket
+        cache_filename = f"{video_id}.m4a"
+        try:
+            # If the file exists, this will succeed. If not, it throws a 404 ClientError
+            b2.head_object(Bucket=B2_BUCKET, Key=cache_filename)
+            print(f"Found {video_id} in B2! Generating pre-signed URL...")
+            presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
+            return jsonify({"stream_url": presigned_url})
+        except ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                print(f"File not in B2. Downloading {video_id} locally...")
+                cache_dir = Path("media/temp")
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                temp_file = cache_dir / cache_filename
+                
+                dl_command = [
+                    "python3", "-m", "yt_dlp",
+                    "-f", format_str,
+                    "--user-agent", ua,
+                    "--extractor-args", "youtube:player_client=android_vr",
+                    "-o", str(temp_file),
+                    f"https://www.youtube.com/watch?v={video_id}"
+                ]
+                subprocess.run(dl_command, capture_output=True, text=True, check=True)
+                
+                print(f"Uploading {video_id} to B2...")
+                b2.upload_file(str(temp_file), B2_BUCKET, cache_filename)
+                
+                print("Cleaning up local file...")
+                temp_file.unlink()
+                
+                presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
+                return jsonify({"stream_url": presigned_url})
+            else:
+                raise
+        
     except subprocess.CalledProcessError as e:
         print(f"yt-dlp error: {e.stderr}")
         return jsonify({"error": "Failed to extract stream"}), 500
+
+@app.route('/media/cache/<filename>', methods=['GET'])
+def serve_cache(filename):
+    cache_path = Path("media/cache") / filename
+    if cache_path.exists():
+        return send_file(cache_path, mimetype='audio/mp4')
+    return jsonify({"error": "Not found"}), 404
 
 @app.route('/songs/import', methods=['POST'])
 def import_song():
