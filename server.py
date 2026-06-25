@@ -144,7 +144,7 @@ def get_stream():
         
     command = [
         "python3", "-m", "yt_dlp",
-        "--js-runtimes", f"node:{NODE_EXEC}",
+        "--extractor-args", "youtube:player_client=android",
         f"ytsearch1:{query}",
         "-f", format_str,
         "--get-url"
