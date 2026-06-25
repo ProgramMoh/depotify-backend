@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 import hashlib
 import boto3
+import threading
 from pathlib import Path
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -41,55 +42,6 @@ if not os.path.exists(NODE_EXEC):
 # Add node to PATH so yt-dlp can find it automatically
 os.environ["PATH"] = os.path.join(NODE_DIR, "bin") + os.pathsep + os.environ.get("PATH", "")
 
-# --- BOOTSTRAP WIREPROXY FOR CLOUDFLARE WARP ---
-import platform
-import socket
-import time
-
-def is_port_in_use(port):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('127.0.0.1', port)) == 0
-
-WIREPROXY_BIN = os.path.join(os.getcwd(), "wireproxy")
-
-if not is_port_in_use(1080):
-    if not os.path.exists(WIREPROXY_BIN):
-        print("Downloading wireproxy...")
-        system = platform.system().lower()
-        machine = platform.machine().lower()
-        
-        if system == "darwin":
-            if machine == "arm64":
-                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_arm64.tar.gz"
-            else:
-                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_amd64.tar.gz"
-        else:
-            if machine == "aarch64":
-                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_arm64.tar.gz"
-            else:
-                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_amd64.tar.gz"
-                
-        tar_path = f"wireproxy_{uuid.uuid4().hex}.tar.gz"
-        urllib.request.urlretrieve(wp_url, tar_path)
-        os.system(f'tar -xf "{tar_path}"')
-        os.remove(tar_path)
-        os.system(f'chmod +x "{WIREPROXY_BIN}"')
-        print("wireproxy installed successfully.")
-
-    import atexit
-    print("Starting wireproxy on port 1080...")
-    wp_process = subprocess.Popen([WIREPROXY_BIN, "-c", "wireproxy.conf"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    atexit.register(wp_process.terminate)
-    
-    # Wait for the proxy to initialize
-    for _ in range(10):
-        if is_port_in_use(1080):
-            print("wireproxy is up and listening on 1080.")
-            break
-        time.sleep(0.5)
-else:
-    print("wireproxy is already running on port 1080.")
-
 app = Flask(__name__)
 
 # Backblaze B2 Configuration
@@ -104,6 +56,28 @@ B2_BUCKET = 'depotify'
 
 # --- DATABASE SETUP ---
 DB_PATH = "depotify.db"
+B2_DB_KEY = "database/depotify.db"
+
+def download_db_from_b2():
+    try:
+        print("Attempting to download database from B2...")
+        b2.download_file(B2_BUCKET, B2_DB_KEY, DB_PATH)
+        print("Successfully downloaded database from B2.")
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            print("Database not found in B2. A new one will be created.")
+        else:
+            print(f"Error downloading database: {e}")
+
+def upload_db_to_b2():
+    try:
+        print("Uploading database to B2...")
+        b2.upload_file(DB_PATH, B2_BUCKET, B2_DB_KEY)
+        print("Successfully uploaded database to B2.")
+    except Exception as e:
+        print(f"Failed to upload database to B2: {e}")
+
+download_db_from_b2()
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -208,40 +182,62 @@ def get_stream():
     ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     
     # 1. Get the video ID
+    video_id = None
     try:
         search_command = [
             "python3", "-m", "yt_dlp",
             f"ytsearch1:{query}",
             "--extractor-args", "youtube:player_client=android_vr",
-            "--proxy", "socks5://127.0.0.1:1080",
             "--get-id"
         ]
         result = subprocess.run(search_command, capture_output=True, text=True, check=True)
         video_id = result.stdout.strip()
-        if not video_id:
-            return jsonify({"error": "No stream found"}), 404
-            
-        # 2. Check B2 Bucket
-        cache_filename = f"{video_id}.m4a"
+    except subprocess.CalledProcessError as e:
+        print(f"yt-dlp search failed, falling back to Piped API... Error: {e.stderr}")
         try:
-            # If the file exists, this will succeed. If not, it throws a 404 ClientError
-            b2.head_object(Bucket=B2_BUCKET, Key=cache_filename)
-            print(f"Found {video_id} in B2! Generating pre-signed URL...")
-            presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
-            return jsonify({"stream_url": presigned_url})
-        except ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                print(f"File not in B2. Downloading {video_id} locally...")
-                cache_dir = Path("media/temp")
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                temp_file = cache_dir / cache_filename
-                
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            
+            piped_url = "https://pipedapi.kavin.rocks"
+            safe_query = urllib.parse.quote(query)
+            test_url = f"{piped_url}/search?q={safe_query}&filter=music_songs"
+            req = urllib.request.Request(test_url, headers={'User-Agent': ua})
+            response = urllib.request.urlopen(req, context=ctx, timeout=10)
+            data = json.loads(response.read().decode('utf-8'))
+            if data.get('items'):
+                video_id = data['items'][0]['url'].split('?v=')[1]
+        except Exception as api_e:
+            print(f"Piped API search failed: {api_e}")
+
+    if not video_id:
+        return jsonify({"error": "No stream found"}), 404
+            
+    # 2. Check B2 Bucket
+    cache_filename = f"{video_id}.m4a"
+    try:
+        # If the file exists, this will succeed. If not, it throws a 404 ClientError
+        b2.head_object(Bucket=B2_BUCKET, Key=cache_filename)
+        print(f"Found {video_id} in B2! Generating pre-signed URL...")
+        presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
+        return jsonify({"stream_url": presigned_url})
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            print(f"File not in B2. Downloading {video_id} locally...")
+            cache_dir = Path("media/temp")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            temp_file = cache_dir / cache_filename
+            
+            download_success = False
+            
+            # Try yt-dlp first
+            try:
                 dl_command = [
                     "python3", "-m", "yt_dlp",
                     "-f", format_str,
                     "--user-agent", ua,
                     "--extractor-args", "youtube:player_client=android_vr",
-                    "--proxy", "socks5://127.0.0.1:1080",
                     "-o", str(temp_file)
                 ]
                 
@@ -250,21 +246,52 @@ def get_stream():
                     
                 dl_command.append(f"https://www.youtube.com/watch?v={video_id}")
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
+                download_success = True
+            except subprocess.CalledProcessError as dl_e:
+                print(f"yt-dlp download failed, falling back to Cobalt API... Error: {dl_e.stderr}")
                 
-                print(f"Uploading {video_id} to B2...")
-                b2.upload_file(str(temp_file), B2_BUCKET, cache_filename)
-                
-                print("Cleaning up local file...")
+            # Fallback to Cobalt
+            if not download_success:
+                try:
+                    cobalt_url = "https://api.cobalt.tools/api/json"
+                    data = json.dumps({
+                        "url": f"https://www.youtube.com/watch?v={video_id}",
+                        "isAudioOnly": True,
+                        "aFormat": "m4a"
+                    }).encode('utf-8')
+                    
+                    req = urllib.request.Request(cobalt_url, data=data, headers={
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': ua
+                    })
+                    
+                    resp = urllib.request.urlopen(req, timeout=15)
+                    result = json.loads(resp.read())
+                    download_url = result.get('url')
+                    if download_url:
+                        urllib.request.urlretrieve(download_url, str(temp_file))
+                        download_success = True
+                    else:
+                        print("Cobalt API did not return a URL.")
+                except Exception as cobalt_e:
+                    print(f"Cobalt API failed: {cobalt_e}")
+                    
+            if not download_success:
+                return jsonify({"error": "Failed to extract stream"}), 500
+            
+            print(f"Uploading {video_id} to B2...")
+            b2.upload_file(str(temp_file), B2_BUCKET, cache_filename)
+            
+            print("Cleaning up local file...")
+            if temp_file.exists():
                 temp_file.unlink()
-                
-                presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
-                return jsonify({"stream_url": presigned_url})
-            else:
-                raise
-        
-    except subprocess.CalledProcessError as e:
-        print(f"yt-dlp error: {e.stderr}")
-        return jsonify({"error": "Failed to extract stream"}), 500
+            
+            presigned_url = b2.generate_presigned_url('get_object', Params={'Bucket': B2_BUCKET, 'Key': cache_filename}, ExpiresIn=7200)
+            return jsonify({"stream_url": presigned_url})
+        else:
+            print(f"B2 Error: {e}")
+            return jsonify({"error": "B2 Storage Error"}), 500
 
 @app.route('/media/cache/<filename>', methods=['GET'])
 def serve_cache(filename):
@@ -323,6 +350,7 @@ def import_song():
             db.execute("""INSERT INTO song_analysis VALUES (?,?,?,?,?,?,?)""",
                 (song_id, tempo_val, key_name, energy, json.dumps(beat_times), outro_start, camelot))
             db.commit()
+            threading.Thread(target=upload_db_to_b2).start()
                 
         return jsonify({"id": song_id, "title": title, "artist": artist, "status": "imported"})
     except Exception as e:
@@ -349,6 +377,7 @@ def delete_song(song_id):
             db.execute("DELETE FROM song_analysis WHERE song_id = ?", (song_id,))
             db.execute("DELETE FROM songs WHERE id = ?", (song_id,))
             db.commit()
+            threading.Thread(target=upload_db_to_b2).start()
             return jsonify({"status": "deleted"})
         return jsonify({"error": "Not found"}), 404
 
@@ -365,12 +394,14 @@ def increment_play(song_id):
         try:
             db.execute("UPDATE songs SET play_count = play_count + 1, last_played_at = CURRENT_TIMESTAMP WHERE id = ?", (song_id,))
             db.commit()
+            threading.Thread(target=upload_db_to_b2).start()
         except sqlite3.OperationalError:
             # Handle if the column didn't exist from earlier run
             db.execute("ALTER TABLE songs ADD COLUMN play_count INTEGER DEFAULT 0")
             db.execute("ALTER TABLE songs ADD COLUMN last_played_at TEXT")
             db.execute("UPDATE songs SET play_count = 1, last_played_at = CURRENT_TIMESTAMP WHERE id = ?", (song_id,))
             db.commit()
+            threading.Thread(target=upload_db_to_b2).start()
     return jsonify({"status": "updated"})
 
 @app.route('/songs', methods=['GET'])

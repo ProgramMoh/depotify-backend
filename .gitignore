@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .env
-server.log
+*.log
 
 node_bin/
+media/
+depotify.db
+yt-dlp-cache/
+cookies.txt
