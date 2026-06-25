@@ -43,35 +43,52 @@ os.environ["PATH"] = os.path.join(NODE_DIR, "bin") + os.pathsep + os.environ.get
 
 # --- BOOTSTRAP WIREPROXY FOR CLOUDFLARE WARP ---
 import platform
-WIREPROXY_BIN = os.path.join(os.getcwd(), "wireproxy")
-if not os.path.exists(WIREPROXY_BIN):
-    print("Downloading wireproxy...")
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    
-    if system == "darwin":
-        if machine == "arm64":
-            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_arm64.tar.gz"
-        else:
-            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_amd64.tar.gz"
-    else:
-        if machine == "aarch64":
-            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_arm64.tar.gz"
-        else:
-            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_amd64.tar.gz"
-            
-    tar_path = "wireproxy.tar.gz"
-    urllib.request.urlretrieve(wp_url, tar_path)
-    os.system(f'tar -xf "{tar_path}"')
-    os.remove(tar_path)
-    os.system(f'chmod +x "{WIREPROXY_BIN}"')
-    print("wireproxy installed successfully.")
+import socket
+import time
 
-# Start wireproxy in the background
-import atexit
-print("Starting wireproxy...")
-wp_process = subprocess.Popen([WIREPROXY_BIN, "-c", "wireproxy.conf"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-atexit.register(wp_process.terminate)
+def is_port_in_use(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+WIREPROXY_BIN = os.path.join(os.getcwd(), "wireproxy")
+
+if not is_port_in_use(1080):
+    if not os.path.exists(WIREPROXY_BIN):
+        print("Downloading wireproxy...")
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        
+        if system == "darwin":
+            if machine == "arm64":
+                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_arm64.tar.gz"
+            else:
+                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_amd64.tar.gz"
+        else:
+            if machine == "aarch64":
+                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_arm64.tar.gz"
+            else:
+                wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_amd64.tar.gz"
+                
+        tar_path = f"wireproxy_{uuid.uuid4().hex}.tar.gz"
+        urllib.request.urlretrieve(wp_url, tar_path)
+        os.system(f'tar -xf "{tar_path}"')
+        os.remove(tar_path)
+        os.system(f'chmod +x "{WIREPROXY_BIN}"')
+        print("wireproxy installed successfully.")
+
+    import atexit
+    print("Starting wireproxy on port 1080...")
+    wp_process = subprocess.Popen([WIREPROXY_BIN, "-c", "wireproxy.conf"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    atexit.register(wp_process.terminate)
+    
+    # Wait for the proxy to initialize
+    for _ in range(10):
+        if is_port_in_use(1080):
+            print("wireproxy is up and listening on 1080.")
+            break
+        time.sleep(0.5)
+else:
+    print("wireproxy is already running on port 1080.")
 
 app = Flask(__name__)
 
