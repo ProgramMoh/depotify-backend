@@ -41,6 +41,38 @@ if not os.path.exists(NODE_EXEC):
 # Add node to PATH so yt-dlp can find it automatically
 os.environ["PATH"] = os.path.join(NODE_DIR, "bin") + os.pathsep + os.environ.get("PATH", "")
 
+# --- BOOTSTRAP WIREPROXY FOR CLOUDFLARE WARP ---
+import platform
+WIREPROXY_BIN = os.path.join(os.getcwd(), "wireproxy")
+if not os.path.exists(WIREPROXY_BIN):
+    print("Downloading wireproxy...")
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    
+    if system == "darwin":
+        if machine == "arm64":
+            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_arm64.tar.gz"
+        else:
+            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_darwin_amd64.tar.gz"
+    else:
+        if machine == "aarch64":
+            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_arm64.tar.gz"
+        else:
+            wp_url = "https://github.com/octeep/wireproxy/releases/download/v1.0.8/wireproxy_linux_amd64.tar.gz"
+            
+    tar_path = "wireproxy.tar.gz"
+    urllib.request.urlretrieve(wp_url, tar_path)
+    os.system(f'tar -xf "{tar_path}"')
+    os.remove(tar_path)
+    os.system(f'chmod +x "{WIREPROXY_BIN}"')
+    print("wireproxy installed successfully.")
+
+# Start wireproxy in the background
+import atexit
+print("Starting wireproxy...")
+wp_process = subprocess.Popen([WIREPROXY_BIN, "-c", "wireproxy.conf"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+atexit.register(wp_process.terminate)
+
 app = Flask(__name__)
 
 # Backblaze B2 Configuration
@@ -164,6 +196,7 @@ def get_stream():
             "python3", "-m", "yt_dlp",
             f"ytsearch1:{query}",
             "--extractor-args", "youtube:player_client=android_vr",
+            "--proxy", "socks5://127.0.0.1:1080",
             "--get-id"
         ]
         result = subprocess.run(search_command, capture_output=True, text=True, check=True)
@@ -191,6 +224,7 @@ def get_stream():
                     "-f", format_str,
                     "--user-agent", ua,
                     "--extractor-args", "youtube:player_client=android_vr",
+                    "--proxy", "socks5://127.0.0.1:1080",
                     "-o", str(temp_file)
                 ]
                 
