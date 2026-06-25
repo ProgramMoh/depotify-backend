@@ -237,6 +237,7 @@ def get_stream():
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
                 download_success = True
             except subprocess.CalledProcessError as dl_e:
+                print(f"yt-dlp download failed: {dl_e.stderr}")
             if not download_success:
                 return jsonify({"error": "Failed to extract stream"}), 500
             
