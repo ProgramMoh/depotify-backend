@@ -191,9 +191,13 @@ def get_stream():
                     "-f", format_str,
                     "--user-agent", ua,
                     "--extractor-args", "youtube:player_client=android_vr",
-                    "-o", str(temp_file),
-                    f"https://www.youtube.com/watch?v={video_id}"
+                    "-o", str(temp_file)
                 ]
+                
+                if os.path.exists("cookies.txt"):
+                    dl_command.extend(["--cookies", "cookies.txt"])
+                    
+                dl_command.append(f"https://www.youtube.com/watch?v={video_id}")
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
                 
                 print(f"Uploading {video_id} to B2...")
