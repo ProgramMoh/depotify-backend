@@ -5,3 +5,4 @@ librosa
 soundfile
 mutagen
 boto3
+ytmusicapi

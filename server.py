@@ -193,23 +193,15 @@ def get_stream():
         result = subprocess.run(search_command, capture_output=True, text=True, check=True)
         video_id = result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        print(f"yt-dlp search failed, falling back to Piped API... Error: {e.stderr}")
+        print(f"yt-dlp search failed, falling back to ytmusicapi... Error: {e.stderr}")
         try:
-            import ssl
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            
-            piped_url = "https://pipedapi.kavin.rocks"
-            safe_query = urllib.parse.quote(query)
-            test_url = f"{piped_url}/search?q={safe_query}&filter=music_songs"
-            req = urllib.request.Request(test_url, headers={'User-Agent': ua})
-            response = urllib.request.urlopen(req, context=ctx, timeout=10)
-            data = json.loads(response.read().decode('utf-8'))
-            if data.get('items'):
-                video_id = data['items'][0]['url'].split('?v=')[1]
+            from ytmusicapi import YTMusic
+            ytmusic = YTMusic()
+            results = ytmusic.search(query, filter="songs")
+            if results and len(results) > 0:
+                video_id = results[0].get('videoId')
         except Exception as api_e:
-            print(f"Piped API search failed: {api_e}")
+            print(f"ytmusicapi search failed: {api_e}")
 
     if not video_id:
         return jsonify({"error": "No stream found"}), 404
