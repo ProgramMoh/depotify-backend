@@ -233,7 +233,7 @@ def get_stream():
                     "-o", str(temp_file)
                 ]
                 
-                dl_command.append(f"https://www.youtube.com/watch?v={video_id}")
+                dl_command.append(f"https://music.youtube.com/watch?v={video_id}")
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
                 download_success = True
             except subprocess.CalledProcessError as dl_e:
