@@ -233,6 +233,9 @@ def get_stream():
                     "-o", str(temp_file)
                 ]
                 
+                if os.path.exists("cookies.txt"):
+                    dl_command.extend(["--cookies", "cookies.txt"])
+                    
                 dl_command.append(f"https://music.youtube.com/watch?v={video_id}")
                 subprocess.run(dl_command, capture_output=True, text=True, check=True)
                 download_success = True
